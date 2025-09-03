@@ -1,0 +1,32 @@
+{
+  "lt": {
+    "title": "Virtualus muziejaus gidas",
+    "intro": "Pasirinkite jums įdomų eksponatą ir užduokite klausimus. Virtualus gidas pateiks paprastus ir aiškius atsakymus, padėsiančius geriau pažinti jo istoriją.",
+    "back": "← Atgal į galeriją",
+    "ask": "Užduokite klausimą apie eksponatą",
+    "spinner": "Ieškoma atsakymo...",
+    "limit_warning": "Pasiekėte klausimų limitą šiai sesijai.",
+    "empty_warning": "Įrašykite klausimą.",
+    "long_warning": "Įveskite trumpesnį klausimą (≤ 200 žodžių).",
+    "sources": "Paieškos šaltiniai",
+    "tokens": "Žetonai",
+    "cost": "Kaina",
+    "download_json": "Atsisiųsti pokalbį (JSON)",
+    "download_txt": "Atsisiųsti pokalbį (TXT)"
+  },
+  "en": {
+    "title": "Virtual Museum Guide",
+    "intro": "Select an exhibit that interests you and ask questions. The virtual guide will provide clear answers to help you better understand its history.",
+    "back": "← Back to gallery",
+    "ask": "Ask a question about the exhibit",
+    "spinner": "Looking for an answer...",
+    "limit_warning": "You’ve reached the session question limit.",
+    "empty_warning": "Please enter a question.",
+    "long_warning": "Please enter a shorter question (≤ 200 words).",
+    "sources": "Search sources",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "download_json": "Download conversation (JSON)",
+    "download_txt": "Download conversation (TXT)"
+  }
+}

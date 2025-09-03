@@ -1,0 +1,13 @@
+.venv
+__pycache__
+.mypy_cache
+.gitignore
+.git
+125.md
+poetry.lock
+pyproject.toml
+Scripts/
+app.log
+errors.log
+llm_config.json
+README.md

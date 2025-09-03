@@ -1,0 +1,8 @@
+.env
+**/.mypy_cache
+**/__pycache__/
+requirements.txt
+.venv/
+**/ingest_full_document_old.py
+app.log
+errors.log
