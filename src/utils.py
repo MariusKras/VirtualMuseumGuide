@@ -4,6 +4,8 @@ prompt handling, exhibit data helpers, retrieval, and answer generation."""
 import json, base64
 from pathlib import Path
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from google.cloud import storage
+from datetime import datetime
 
 
 def load_llm_config(url: str) -> dict:
@@ -130,7 +132,7 @@ def build_timeline_text(data_dir: Path, lang: str, logger) -> str:
     lines = []
     for jf in sorted(data_dir.glob("*.json")):
         try:
-            with open(jf, "response", encoding="utf-8") as f:
+            with open(jf, "r", encoding="utf-8") as f:
                 js = json.load(f)
             if not isinstance(js, dict):
                 raise TypeError("JSON root is not a dict")
@@ -173,15 +175,15 @@ def ask_item_or_search(
 ):
     """Decide to answer directly or call a function; return (action, content)."""
     system = system_prompt_route(config, lang)
-    trimmed, u, a = [], 0, 0
+    trimmed, user_count, assistant_count = [], 0, 0
     for msg in reversed(history):
-        if msg["role"] == "user" and u < 2:
+        if msg["role"] == "user" and user_count < 4:
             trimmed.append(msg)
-            u += 1
-        elif msg["role"] == "assistant" and a < 2:
+            user_count += 1
+        elif msg["role"] == "assistant" and assistant_count < 4:
             trimmed.append(msg)
-            a += 1
-        if u >= 2 and a >= 2:
+            assistant_count += 1
+        if user_count >= 4 and assistant_count >= 4:
             break
     trimmed = list(reversed(trimmed))
     lc_msgs = [SystemMessage(content=system)]
@@ -290,3 +292,17 @@ def to_data_url(p: str) -> str:
     with open(p, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
         return f"data:image/jpeg;base64,{b64}"
+
+
+def save_conversation_to_gcs(conversation: list[dict], bucket_name: str, prefix: str = "conversations") -> str:
+    """Persist the conversation JSON to a Cloud Storage bucket and return the object path."""
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    blob_path = f"{prefix}/conversation_{ts}.json"
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(
+        json.dumps(conversation, ensure_ascii=False, indent=2),
+        content_type="application/json",
+    )
+    return blob_path

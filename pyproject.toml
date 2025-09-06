@@ -17,6 +17,7 @@ langchain = "^0.3.27"
 langchain-pinecone = "^0.2.11"
 openai = "^1.102.0"
 langchain-community = "^0.3.29"
+google-cloud-storage = "^3.3.1"
 
 
 [build-system]

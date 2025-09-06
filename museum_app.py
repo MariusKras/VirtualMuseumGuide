@@ -22,6 +22,7 @@ from src.utils import (
     ask_item_or_search,
     answer_from_search,
     to_data_url,
+    save_conversation_to_gcs,
 )
 
 load_dotenv()
@@ -33,6 +34,7 @@ LLM_CONFIG_URL = os.getenv(
     "LLM_CONFIG_URL",
     "https://storage.googleapis.com/museum-guide-config/llm_config.json",
 )
+LOG_BUCKET = os.getenv("LOG_BUCKET", "museum-guide-config")
 
 with open("lang.json", "r", encoding="utf-8") as f:
     LANG = json.load(f)
@@ -322,6 +324,12 @@ def render_chat():
     st.session_state.history.append({"role": "assistant", "content": reply})
     logger.info(f"Assistant: {reply}")
     logger.info(f"Usage: tokens={tokens_used}, cost=${usd_cost:.6f}")
+
+    try:
+        obj_path = save_conversation_to_gcs(st.session_state.history, LOG_BUCKET)
+        logger.info(f"Saved conversation to gs://{LOG_BUCKET}/{obj_path}")
+    except Exception as e:
+        logger.error(f"Failed to save conversation to GCS: {e}")
 
 
 if st.session_state.view == "gallery":
