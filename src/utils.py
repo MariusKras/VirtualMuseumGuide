@@ -81,7 +81,7 @@ def short_meta_from_item(js: dict) -> str:
     fields = {
         "pavadinimas": js.get("pavadinimas"),
         "technika": js.get("technika"),
-        "laikotarpis": js.get("laikotarpis"),
+        "amzius": js.get("amžius"),
         "medžiaga": js.get("medžiaga"),
     }
     parts = [f"{k}: {v}" for k, v in fields.items() if v]
@@ -140,7 +140,7 @@ def build_timeline_text(data_dir: Path, lang: str, logger) -> str:
             logger.error(f'Timeline JSON load failed for "{jf.name}": {e}')
             continue
         title = js.get("pavadinimas", jf.stem)
-        period = js.get("laikotarpis") or missing
+        period = js.get("amžius") or missing
         lines.append(f"• {title} — {period}\n")
     return header + "\n" + "\n".join(lines)
 

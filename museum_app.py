@@ -1,6 +1,6 @@
 import os, json, logging, sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -25,6 +25,36 @@ from src.utils import (
     save_conversation_to_gcs,
 )
 
+FRONTEND_IDLE_MIN = 10
+BACKEND_IDLE_MIN = 25
+
+def inject_idle_timeout(minutes: int = FRONTEND_IDLE_MIN) -> None:
+    ms = int(minutes * 60 * 1000)
+    st.markdown(
+        f"""
+<script>
+(function() {{
+  const TIMEOUT_MS = {ms};
+  let timerId;
+  function resetTimer() {{
+    if (timerId) clearTimeout(timerId);
+    timerId = setTimeout(function() {{
+      try {{
+        window.location.replace("about:blank");
+      }} catch (e) {{
+        window.location.href = "about:blank";
+      }}
+    }}, TIMEOUT_MS);
+  }}
+  const events = ["mousemove","mousedown","click","scroll","keypress","touchstart"];
+  events.forEach(ev => window.addEventListener(ev, resetTimer, true));
+  resetTimer();
+}})();
+</script>
+""",
+        unsafe_allow_html=True,
+    )
+
 load_dotenv()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
@@ -39,12 +69,10 @@ LOG_BUCKET = os.getenv("LOG_BUCKET", "museum-guide-config")
 with open("lang.json", "r", encoding="utf-8") as f:
     LANG = json.load(f)
 
-
 def handle_exception(exc_type, exc_value, exc_tb):
     if issubclass(exc_type, KeyboardInterrupt):
         raise exc_value
     logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
-
 
 logger = logging.getLogger("museum_app")
 logger.setLevel(logging.INFO)
@@ -67,12 +95,11 @@ DATA_DIR = Path("data")
 MAX_QUESTIONS = 20
 
 st.set_page_config(page_title="Muziejaus pokalbių prototipas", layout="wide")
-
+inject_idle_timeout(FRONTEND_IDLE_MIN)
 
 @st.cache_data()
 def load_config(url: str) -> dict:
     return load_llm_config(url)
-
 
 @st.cache_resource
 def get_clients():
@@ -83,11 +110,9 @@ def get_clients():
     index = Pinecone(api_key=PINECONE_API_KEY).Index(PINECONE_INDEX)
     return chat, embeddings, index
 
-
 @st.cache_data
 def gallery_cache():
     return load_gallery(ASSETS_DIR, DATA_DIR, logger)
-
 
 LLM_CONFIG = load_config(LLM_CONFIG_URL)
 FUNCTIONS = LLM_CONFIG["functions"]
@@ -109,15 +134,24 @@ if "question_count" not in st.session_state:
     st.session_state.question_count = 0
 if "lang" not in st.session_state:
     st.session_state.lang = "lt"
+if "last_input" not in st.session_state:
+    st.session_state.last_input = datetime.now()
+
+# ---------------- Backend expiry ----------------
+if datetime.now() - st.session_state.last_input > timedelta(minutes=BACKEND_IDLE_MIN):
+    st.error("Session expired due to inactivity.")
+    st.stop()
 
 spacer, col_en, col_lt = st.columns([0.84, 0.08, 0.08])
 with col_en:
     if st.button("EN", use_container_width=True, key="btn_en"):
         st.session_state.lang = "en"
+        st.session_state.last_input = datetime.now()
         st.rerun()
 with col_lt:
     if st.button("LT", use_container_width=True, key="btn_lt"):
         st.session_state.lang = "lt"
+        st.session_state.last_input = datetime.now()
         st.rerun()
 
 current_lang = LANG[st.session_state.lang]
@@ -126,6 +160,7 @@ with st.sidebar:
     if st.session_state.view == "chat":
         if st.button(current_lang["back"]):
             st.session_state.view = "gallery"
+            st.session_state.last_input = datetime.now()
             st.rerun()
         if st.session_state.history:
             json_str = json.dumps(
@@ -161,7 +196,6 @@ with st.sidebar:
                 else f"pokalbis_{ts}.txt",
                 mime="text/plain",
             )
-
 
 def render_gallery():
     st.title(current_lang["title"])
@@ -205,6 +239,7 @@ def render_gallery():
         )
         st.session_state.selected_item_id = item["id"]
         st.session_state.selected_image = item["image"]
+        st.session_state.last_input = datetime.now()
         logger.info(f'Selected item: "{title_ui}"')
         st.session_state.view = "chat"
         st.session_state.history = [
@@ -214,7 +249,6 @@ def render_gallery():
             }
         ]
         st.rerun()
-
 
 def render_chat():
     item_js = (
@@ -243,6 +277,8 @@ def render_chat():
         return
 
     user_question = q_input.strip()
+    st.session_state.last_input = datetime.now()
+
     if not user_question:
         st.warning(current_lang["empty_warning"])
         logger.info("Rejected user message: empty")
@@ -330,7 +366,6 @@ def render_chat():
         logger.info(f"Saved conversation to gs://{LOG_BUCKET}/{obj_path}")
     except Exception as e:
         logger.error(f"Failed to save conversation to GCS: {e}")
-
 
 if st.session_state.view == "gallery":
     render_gallery()
