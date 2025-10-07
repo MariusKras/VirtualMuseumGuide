@@ -1,6 +1,6 @@
-import os, json, logging, sys
+import os, json, logging, sys, threading
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -10,14 +10,10 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.callbacks import get_openai_callback
 from src.utils import (
     load_llm_config,
-    system_prompt_route,
-    system_prompt_answer,
-    explain_text,
     load_gallery,
     load_item_json,
     short_meta_from_item,
     retrieve,
-    build_timeline_text,
     greet_on_select,
     ask_item_or_search,
     answer_from_search,
@@ -25,35 +21,18 @@ from src.utils import (
     save_conversation_to_gcs,
 )
 
-FRONTEND_IDLE_MIN = 10
-BACKEND_IDLE_MIN = 25
+# Hard cutoff: kill container after 5 minutes
+HARD_TIMEOUT_MIN = 5
 
-def inject_idle_timeout(minutes: int = FRONTEND_IDLE_MIN) -> None:
-    ms = int(minutes * 60 * 1000)
-    st.markdown(
-        f"""
-<script>
-(function() {{
-  const TIMEOUT_MS = {ms};
-  let timerId;
-  function resetTimer() {{
-    if (timerId) clearTimeout(timerId);
-    timerId = setTimeout(function() {{
-      try {{
-        window.location.replace("about:blank");
-      }} catch (e) {{
-        window.location.href = "about:blank";
-      }}
-    }}, TIMEOUT_MS);
-  }}
-  const events = ["mousemove","mousedown","click","scroll","keypress","touchstart"];
-  events.forEach(ev => window.addEventListener(ev, resetTimer, true));
-  resetTimer();
-}})();
-</script>
-""",
-        unsafe_allow_html=True,
-    )
+def kill_process_after_timeout(minutes: int):
+    def killer():
+        import time
+        time.sleep(minutes * 60)
+        os._exit(0)
+    t = threading.Thread(target=killer, daemon=True)
+    t.start()
+
+kill_process_after_timeout(HARD_TIMEOUT_MIN)
 
 load_dotenv()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
@@ -69,11 +48,6 @@ LOG_BUCKET = os.getenv("LOG_BUCKET", "museum-guide-config")
 with open("lang.json", "r", encoding="utf-8") as f:
     LANG = json.load(f)
 
-def handle_exception(exc_type, exc_value, exc_tb):
-    if issubclass(exc_type, KeyboardInterrupt):
-        raise exc_value
-    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
-
 logger = logging.getLogger("museum_app")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -88,14 +62,11 @@ if not logger.handlers:
     logger.addHandler(fh_info)
     logger.addHandler(fh_err)
 
-sys.excepthook = handle_exception
-
 ASSETS_DIR = Path("assets/processed")
 DATA_DIR = Path("data")
 MAX_QUESTIONS = 20
 
 st.set_page_config(page_title="Muziejaus pokalbių prototipas", layout="wide")
-inject_idle_timeout(FRONTEND_IDLE_MIN)
 
 @st.cache_data()
 def load_config(url: str) -> dict:
@@ -104,9 +75,7 @@ def load_config(url: str) -> dict:
 @st.cache_resource
 def get_clients():
     chat = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, api_key=OPENAI_API_KEY)
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small", api_key=OPENAI_API_KEY
-    )
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
     index = Pinecone(api_key=PINECONE_API_KEY).Index(PINECONE_INDEX)
     return chat, embeddings, index
 
@@ -134,24 +103,15 @@ if "question_count" not in st.session_state:
     st.session_state.question_count = 0
 if "lang" not in st.session_state:
     st.session_state.lang = "lt"
-if "last_input" not in st.session_state:
-    st.session_state.last_input = datetime.now()
-
-# ---------------- Backend expiry ----------------
-if datetime.now() - st.session_state.last_input > timedelta(minutes=BACKEND_IDLE_MIN):
-    st.error("Session expired due to inactivity.")
-    st.stop()
 
 spacer, col_en, col_lt = st.columns([0.84, 0.08, 0.08])
 with col_en:
     if st.button("EN", use_container_width=True, key="btn_en"):
         st.session_state.lang = "en"
-        st.session_state.last_input = datetime.now()
         st.rerun()
 with col_lt:
     if st.button("LT", use_container_width=True, key="btn_lt"):
         st.session_state.lang = "lt"
-        st.session_state.last_input = datetime.now()
         st.rerun()
 
 current_lang = LANG[st.session_state.lang]
@@ -160,22 +120,15 @@ with st.sidebar:
     if st.session_state.view == "chat":
         if st.button(current_lang["back"]):
             st.session_state.view = "gallery"
-            st.session_state.last_input = datetime.now()
             st.rerun()
         if st.session_state.history:
-            json_str = json.dumps(
-                st.session_state.history, ensure_ascii=False, indent=2
-            )
+            json_str = json.dumps(st.session_state.history, ensure_ascii=False, indent=2)
             txt_lines = []
             for m in st.session_state.history:
                 role = (
                     "User"
                     if (m["role"] == "user" and st.session_state.lang == "en")
-                    else (
-                        "Vartotojas"
-                        if m["role"] == "user"
-                        else ("Guide" if st.session_state.lang == "en" else "Gidas")
-                    )
+                    else ("Vartotojas" if m["role"] == "user" else ("Guide" if st.session_state.lang == "en" else "Gidas"))
                 )
                 txt_lines.append(f"{role}: {m['content']}")
             txt_str = "\n\n".join(txt_lines)
@@ -183,17 +136,13 @@ with st.sidebar:
             st.download_button(
                 current_lang["download_json"],
                 data=json_str.encode("utf-8"),
-                file_name=f"conversation_{ts}.json"
-                if st.session_state.lang == "en"
-                else f"pokalbis_{ts}.json",
+                file_name=f"conversation_{ts}.json" if st.session_state.lang == "en" else f"pokalbis_{ts}.json",
                 mime="application/json",
             )
             st.download_button(
                 current_lang["download_txt"],
                 data=txt_str.encode("utf-8"),
-                file_name=f"conversation_{ts}.txt"
-                if st.session_state.lang == "en"
-                else f"pokalbis_{ts}.txt",
+                file_name=f"conversation_{ts}.txt" if st.session_state.lang == "en" else f"pokalbis_{ts}.txt",
                 mime="text/plain",
             )
 
@@ -205,25 +154,12 @@ def render_gallery():
     for row in rows:
         cols = st.columns(3, gap="small")
         for col, item in zip(cols, row):
-            title_ui = (
-                item["title_en"] if st.session_state.lang == "en" else item["title_lt"]
-            )
+            title_ui = item["title_en"] if st.session_state.lang == "en" else item["title_lt"]
             with col:
                 idx = clickable_images(
                     [to_data_url(item["image"])],
-                    div_style={
-                        "display": "grid",
-                        "justify-items": "center",
-                        "align-items": "center",
-                        "padding": "0",
-                    },
-                    img_style={
-                        "width": "70%",
-                        "height": "auto",
-                        "cursor": "pointer",
-                        "margin": "0 auto",
-                        "display": "block",
-                    },
+                    div_style={"display": "grid", "justify-items": "center", "align-items": "center", "padding": "0"},
+                    img_style={"width": "70%", "height": "auto", "cursor": "pointer", "margin": "0 auto", "display": "block"},
                     key=f"click-{item['id']}",
                 )
                 st.markdown(
@@ -234,28 +170,16 @@ def render_gallery():
                     clicked_id = item["id"]
     if clicked_id:
         item = next(x for x in GALLERY if x["id"] == clicked_id)
-        title_ui = (
-            item["title_en"] if st.session_state.lang == "en" else item["title_lt"]
-        )
+        title_ui = item["title_en"] if st.session_state.lang == "en" else item["title_lt"]
         st.session_state.selected_item_id = item["id"]
         st.session_state.selected_image = item["image"]
-        st.session_state.last_input = datetime.now()
         logger.info(f'Selected item: "{title_ui}"')
         st.session_state.view = "chat"
-        st.session_state.history = [
-            {
-                "role": "assistant",
-                "content": greet_on_select(st.session_state.lang, title_ui),
-            }
-        ]
+        st.session_state.history = [{"role": "assistant", "content": greet_on_select(st.session_state.lang, title_ui)}]
         st.rerun()
 
 def render_chat():
-    item_js = (
-        load_item_json(DATA_DIR, st.session_state.selected_item_id, logger)
-        if st.session_state.selected_item_id
-        else {}
-    )
+    item_js = load_item_json(DATA_DIR, st.session_state.selected_item_id, logger) if st.session_state.selected_item_id else {}
     title_lt = item_js.get("pavadinimas") or (st.session_state.selected_item_id or "")
     title_en = item_js.get("pavadinimas_en") or title_lt
     selected_title_ui = title_en if st.session_state.lang == "en" else title_lt
@@ -272,28 +196,10 @@ def render_chat():
             st.markdown(msg["content"])
 
     q_input = st.chat_input(current_lang["ask"])
-
     if not q_input:
         return
 
     user_question = q_input.strip()
-    st.session_state.last_input = datetime.now()
-
-    if not user_question:
-        st.warning(current_lang["empty_warning"])
-        logger.info("Rejected user message: empty")
-        return
-    if len(user_question.split()) > 200:
-        st.warning(current_lang["long_warning"])
-        logger.info(f"Rejected user message: length {len(user_question.split())} > 200")
-        return
-    if st.session_state.question_count >= MAX_QUESTIONS:
-        st.warning(current_lang["limit_warning"])
-        logger.info(
-            f"Rate limit reached: {st.session_state.question_count} ≥ {MAX_QUESTIONS}"
-        )
-        return
-
     st.session_state.question_count += 1
     st.session_state.history.append({"role": "user", "content": user_question})
     logger.info(f"User: {user_question}")
@@ -346,8 +252,6 @@ def render_chat():
                         lang=st.session_state.lang,
                         logger=logger,
                     )
-                elif action == "answer":
-                    reply = content
                 else:
                     reply = content
 
